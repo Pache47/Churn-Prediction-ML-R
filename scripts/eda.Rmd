@@ -1,0 +1,233 @@
+---
+title: "Final Project"
+author: "Tsega Abebe"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r}
+# Libraries
+library(tidyverse)
+library(skimr)
+library(caret)
+library(dplyr)
+```
+
+
+
+```{r}
+#Load the dataset
+cell2cell <- read.csv("cell2celltrain.csv", stringsAsFactors = TRUE)
+head(cell2cell)
+```
+
+*Data Exploration*
+```{r}
+#Check the structure
+str(cell2cell)
+```
+We can see that the dataset has 51,047 rows and 58 columns. There are a mix of data types:
+- Numeric: 26 columns
+- Categorical: 23 columns
+- Integer: 9 columns
+
+
+```{r}
+# Check for missing values and summary statistics
+skim(cell2cell)
+```
+- Almost all numeric and catagorical are right skewd 
+- I see some missing and unusual values:
+  - Negative Revenue: The minimum MonthlyRevenue is -$6.17, which could represent credits or adjustments.
+  - Negative TotalRecurringCharge: The minimum is -$11.00, which is unusual for a recurring charge.
+  - AgeHH1 and AgeHH2 both have values of 0, which we need to investigate
+
+- I also see extremely high values:
+  - Max MonthlyRevenue: $1,223.38 (compared to median of $48.46)
+  - Max MonthlyMinutes: 7,359 mins (compared to median of 366)
+  - Max DroppedCalls: 221.7 (compared to median of 3)
+  - Max CustomerCareCalls: 327.3 (compared to median of 0)
+
+
+```{r}
+#check all the missing values
+sapply(cell2cell, function(x) sum(is.na(x)))
+```
+
+Some columns have missing values:
+- MonthlyRevenue, MonthlyMinutes, TotalRecurringCharge, DirectorAssistedCalls, OverageMinutes, RoamingCalls: 156 missing values each.
+- PercChangeMinutes, PercChangeRevenues: 367 missing values
+- AgeHH1, AgeHH2: ~909 missing values.
+- Handsets, HandsetModels, CurrentEquipmentDays: 1 missing value each.
+
+
+
+Lets check the distribution of the churn
+```{r}
+#Distribution of the churn
+ggplot(cell2cell, aes(x = Churn, fill = Churn)) +
+  geom_bar() +
+  labs(title = "Distribution of Customer Churn", x = "Churn", y = "Count") +
+  theme_minimal()
+```
+
+
+```{r}
+# Check the proportion of churn cases
+table(cell2cell$Churn) %>% prop.table()
+```
+
+The data is imbalanced:
+- No (Non-Churn): 71.2%
+- Yes (Churn): 28.8%
+
+
+
+To handle the missing values lets first check from which class the missing values are from:
+```{r}
+# Check if missing values are mainly from the majority class (non-churned)
+cell2cell %>%
+  filter(if_any(everything(), is.na)) %>%
+  group_by(Churn) %>%
+  summarize(count = n())
+
+```
+
+- Since the missing values come from the majority (non-churned) class, it is reasonable to drop these rows. Dropping these rows will have a minimal impact on class representation.
+
+
+
+```{r}
+# Drop rows with any missing values
+cell2cell <- cell2cell %>% drop_na()
+
+# new dimensions
+dim(cell2cell)
+
+# check na
+sum(is.na(cell2cell))
+```
+
+
+
+- Let's visualize the distribution and spot any outliers or unusual values. 
+- Let's start with variables that are imporatnt to my analysis, like (MonthlyRevenue, MonthlyMinutes, and perhaps AgeHH1/AgeHH2 for customer demographics).
+
+*Monthly Revenue Distribution by Churn*
+```{r}
+ggplot(cell2cell, aes(x = MonthlyRevenue)) + geom_histogram(bins = 30, fill = "blue", color = "black") + labs(title = "Distribution of Monthly Revenue", x = "Monthly Revenue", y = "Count")
+```
+
+- The distribution of Monthly Revenue is highly right-skewed with most customers in the lower revenue brackets.
+
+
+```{r}
+ggplot(cell2cell, aes(x = MonthlyRevenue, fill = Churn)) +
+  geom_boxplot(alpha = 0.6) +
+  labs(title = "Monthly Revenue Distribution by Churn", x = "Monthly Revenue", y = "Density") +
+  theme_minimal()
+```
+- There are a significant number of outliers as seen in the boxplot, with some revenue values extending well beyond the interquartile range (IQR)
+
+- This indicates that most customers generate low to moderate revenue, while a few generate exceptionally high revenue.
+
+
+Now lets check call minutes since it is a key indicator of service usage:
+
+
+```{r}
+#Histogram for MonthlyMinutes
+ggplot(cell2cell, aes(x = MonthlyMinutes)) + geom_histogram(bins = 30, fill = "orange", color = "black") + labs(title = "Distribution of Monthly Minutes", x = "Monthly Minutes", y = "Count")
+```
+
+- Similar to revenue, the distribution is also right-skewed, indicating that most customers have low to moderate usage, while a few have very high usage.
+
+
+Lets check the box plot for outliers: 
+```{r}
+ggplot(cell2cell, aes(x = MonthlyMinutes, fill = Churn)) +
+  geom_boxplot(alpha = 0.6) +
+  labs(title = "Monthly Minutes Distribution by Churn", x = "Monthly Minutes", y = "Density") +
+  theme_minimal()
+
+```
+
+- The boxplot shows a high number of outliers, which might indicate irregular usage patterns among a small group of customers.
+
+
+*Distribution of Household Age (AgeHH1 and AgeHH2)*
+```{r}
+ggplot(cell2cell, aes(x = AgeHH1)) + geom_histogram(bins = 30, fill = "purple", color = "black") + labs(title = "Distribution of Primary Household Age (AgeHH1)", x = "AgeHH1", y = "Count")
+
+ggplot(cell2cell, aes(x = AgeHH2)) + geom_histogram(bins = 30, fill = "red", color = "black") + labs(title = "Distribution of Secondary Household Age (AgeHH2)", x = "AgeHH2", y = "Count")
+```
+
+We need to investigate why why zeros exist and whether they are valid or missing data.
+
+```{r}
+# Check proportion of zeros in AgeHH1 and AgeHH2
+cell2cell %>%
+  summarise(
+    AgeHH1_Zeros = sum(AgeHH1 == 0, na.rm = TRUE) / n(),
+    AgeHH2_Zeros = sum(AgeHH2 == 0, na.rm = TRUE) / n()
+  )
+```
+
+- AgeHH1 Zeros: A primary household member aged 0 is biologically impossible. These are likely data entry errors or placeholders for missing values.
+
+- AgeHH2 Zeros: Valid if they represent households with no secondary member (e.g., single-person households).
+
+
+*Service Quality: Dropped Calls vs Churn*
+
+```{r}
+ggplot(cell2cell, aes(x = DroppedCalls, y = Churn, fill = Churn)) +
+  geom_boxplot() +
+  labs(title = "Dropped Calls vs Churn", x = "Dropped Calls", y = "Churn") +
+  theme_minimal()
+```
+
+
+*MonthsInService vs Churn Rate*
+Let's see if newer or long-term customers churn more:
+```{r}
+cell2cell %>%
+  group_by(MonthsInService) %>%
+  summarise(ChurnRate = mean(Churn == "Yes")) %>%
+  ggplot(aes(x = MonthsInService, y = ChurnRate)) +
+  geom_line(color = "steelblue") +
+  geom_point(color = "steelblue") +
+  labs(title = "Churn Rate by Months", x = "Months in Service", y = "Churn Rate") +
+  theme_minimal()
+```
+
+
+*Customer Care Calls Impact*
+- High call volume often predicts churn:
+
+```{r}
+cell2cell %>%
+  count(CustomerCareCalls, Churn) %>%
+  group_by(CustomerCareCalls) %>%
+  mutate(Proportion = n / sum(n)) %>%
+  filter(Churn == "Yes") %>%
+  ggplot(aes(x = factor(CustomerCareCalls), y = Proportion)) +
+  geom_col(fill = "tomato") +
+  labs(title = "Churn Rate by Customer Care Calls", x = "Customer Care Calls", y = "Churn Rate") +
+  theme_minimal()
+```
+
+*Income Group vs Churn*
+Check if lower-income customers churn more
+```{r}
+cell2cell %>%
+  group_by(IncomeGroup) %>%
+  summarise(ChurnRate = mean(Churn == "Yes", na.rm = TRUE)) %>%
+  ggplot(aes(x = factor(IncomeGroup), y = ChurnRate)) +
+  geom_col(fill = "darkgreen") +
+  labs(title = "Churn Rate by Income Group", x = "Income Group", y = "Churn Rate") +
+  theme_minimal()
+```
+
+
+
